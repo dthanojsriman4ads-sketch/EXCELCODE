@@ -1,12 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { Upload, FileText, Layout, Download, ArrowLeft } from 'lucide-react';
+import { Upload, FileText, Layout, Download, ArrowLeft, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const TicketValidator = () => {
   const [mode, setMode] = useState('single');
   const [results, setResults] = useState([]);
   const [dualData, setDualData] = useState({ orders: null, tickets: null });
+  const [filenames, setFilenames] = useState({ single: '', orders: '', tickets: '' });
 
   const stats = useMemo(() => {
     const total = results.length;
@@ -18,6 +19,8 @@ const TicketValidator = () => {
   const handleFileUpload = (e, type) => {
     const file = e.target.files[0];
     if (!file) return;
+
+    setFilenames(prev => ({ ...prev, [type]: file.name }));
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -140,39 +143,93 @@ const TicketValidator = () => {
       {/* Upload Sections */}
       <div className="space-y-6">
         {mode === 'single' ? (
-          <label className="drop-zone block p-12 group">
-            <input type="file" className="hidden" onChange={(e) => handleFileUpload(e, 'single')} />
-            <div className="flex flex-col items-center space-y-4">
-              <Upload className="w-16 h-16 text-primary group-hover:scale-110 transition-transform" />
-              <div className="text-xl">Drag & drop combined file or <span className="text-primary font-bold underline">browse</span></div>
-              <p className="text-sm text-slate-500">Requires pg_order_id, num_of_tickets, order_id, ticket_type</p>
-            </div>
-          </label>
+          <div className="relative group">
+            <label className={`drop-zone block p-12 ${results.length > 0 ? 'border-green-500/50 bg-green-500/5' : ''}`}>
+              <input 
+                key={results.length > 0 ? 'single-loaded' : 'single-empty'}
+                type="file" 
+                className="hidden" 
+                onChange={(e) => handleFileUpload(e, 'single')} 
+              />
+              <div className="flex flex-col items-center space-y-4">
+                <Upload className={`w-16 h-16 ${results.length > 0 ? 'text-green-400' : 'text-primary'}`} />
+                <div className="text-xl">
+                  {results.length > 0 ? filenames.single : <>Drag & drop combined file or <span className="text-primary font-bold underline">browse</span></>}
+                </div>
+                <p className="text-sm text-slate-500">Requires pg_order_id, num_of_tickets, order_id, ticket_type</p>
+              </div>
+            </label>
+            {results.length > 0 && (
+              <button 
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setResults([]); setFilenames(prev => ({ ...prev, single: '' })); }}
+                className="absolute top-6 right-6 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
+                title="Remove File"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </div>
         ) : (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <label className="drop-zone p-8 group">
-                <input type="file" className="hidden" onChange={(e) => handleFileUpload(e, 'orders')} />
-                <div className="flex flex-col items-center space-y-3">
-                  <FileText className="w-10 h-10 text-primary group-hover:scale-110 transition-transform" />
-                  <div className="font-semibold text-lg">Orders Report</div>
-                  <p className="text-xs text-slate-500">ID, Count, Type</p>
-                  <div className={`mt-4 px-3 py-1 rounded-lg text-sm font-medium ${dualData.orders ? 'bg-green-500/20 text-green-400' : 'bg-white/5 text-slate-500'}`}>
-                    {dualData.orders ? 'File Loaded' : 'Pending...'}
+              <div className="relative group">
+                <label className={`drop-zone block p-8 ${dualData.orders ? 'border-green-500/50 bg-green-500/5' : ''}`}>
+                  <input 
+                    key={dualData.orders ? 'orders-loaded' : 'orders-empty'}
+                    type="file" 
+                    className="hidden" 
+                    onChange={(e) => handleFileUpload(e, 'orders')} 
+                  />
+                  <div className="flex flex-col items-center space-y-3">
+                    <FileText className={`w-10 h-10 ${dualData.orders ? 'text-green-400' : 'text-primary'}`} />
+                    <div className="font-semibold text-lg">{filenames.orders || 'Orders Report'}</div>
+                    <p className="text-xs text-slate-500">ID, Count, Type</p>
+                    {dualData.orders && (
+                      <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
+                        File Loaded
+                      </div>
+                    )}
                   </div>
-                </div>
-              </label>
-              <label className="drop-zone p-8 group">
-                <input type="file" className="hidden" onChange={(e) => handleFileUpload(e, 'tickets')} />
-                <div className="flex flex-col items-center space-y-3">
-                  <Layout className="w-10 h-10 text-primary group-hover:scale-110 transition-transform" />
-                  <div className="font-semibold text-lg">Tickets Report</div>
-                  <p className="text-xs text-slate-500">Order ID (Scan)</p>
-                  <div className={`mt-4 px-3 py-1 rounded-lg text-sm font-medium ${dualData.tickets ? 'bg-green-500/20 text-green-400' : 'bg-white/5 text-slate-500'}`}>
-                    {dualData.tickets ? 'File Loaded' : 'Pending...'}
+                </label>
+                {dualData.orders && (
+                  <button 
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDualData(prev => ({ ...prev, orders: null })); setFilenames(prev => ({ ...prev, orders: '' })); setResults([]); }}
+                    className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
+                    title="Remove File"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+              <div className="relative group">
+                <label className={`drop-zone block p-8 ${dualData.tickets ? 'border-green-500/50 bg-green-500/5' : ''}`}>
+                  <input 
+                    key={dualData.tickets ? 'tickets-loaded' : 'tickets-empty'}
+                    type="file" 
+                    className="hidden" 
+                    onChange={(e) => handleFileUpload(e, 'tickets')} 
+                  />
+                  <div className="flex flex-col items-center space-y-3">
+                    <Layout className={`w-10 h-10 ${dualData.tickets ? 'text-green-400' : 'text-primary'}`} />
+                    <div className="font-semibold text-lg">{filenames.tickets || 'Tickets Report'}</div>
+                    <p className="text-xs text-slate-500">Order ID (Scan)</p>
+                    {dualData.tickets && (
+                      <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
+                        File Loaded
+                      </div>
+                    )}
                   </div>
-                </div>
-              </label>
+                </label>
+                {dualData.tickets && (
+                  <button 
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDualData(prev => ({ ...prev, tickets: null })); setFilenames(prev => ({ ...prev, tickets: '' })); setResults([]); }}
+                    className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
+                    title="Remove File"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             </div>
             <div className="text-center">
               <button 

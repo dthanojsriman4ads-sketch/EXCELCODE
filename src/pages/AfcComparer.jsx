@@ -1,0 +1,473 @@
+import React, { useState, useMemo } from 'react';
+import * as XLSX from 'xlsx';
+import { Upload, FileText, Layout, Download, ArrowLeft, CheckCircle2, AlertCircle, TrendingUp, DollarSign, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
+
+const AfcComparer = () => {
+  const [reports, setReports] = useState({ orders: null, afc: null });
+  const [filenames, setFilenames] = useState({ orders: '', afc: '' });
+  const [results, setResults] = useState(null);
+
+  const handleFileUpload = (e, type) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setFilenames(prev => ({ ...prev, [type]: file.name }));
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const bstr = evt.target.result;
+      const wb = XLSX.read(bstr, { type: 'binary' });
+      const wsname = wb.SheetNames[0];
+      const ws = wb.Sheets[wsname];
+      // Get raw data to detect headers manually
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
+      setReports(prev => ({ ...prev, [type]: data }));
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const detectHeaders = (data, keywords) => {
+    let mapping = { headerIndex: -1 };
+    for (let i = 0; i < Math.min(data.length, 20); i++) {
+      const row = (data[i] || []).map(c => c?.toString().toLowerCase().trim() || "");
+      if (row.length === 0) continue;
+
+      let matchCount = 0;
+      let tempMapping = {};
+
+      row.forEach((cell, idx) => {
+        Object.entries(keywords).forEach(([key, matches]) => {
+          // Check for exact match first, then partial
+          if (matches.some(m => cell === m || cell.includes(m))) {
+            if (tempMapping[key] === undefined || cell === keywords[key][0]) {
+              tempMapping[key] = idx;
+            }
+          }
+        });
+      });
+
+      // We consider it a header row if at least ID and Revenue are found
+      if (tempMapping.id !== undefined && tempMapping.revenue !== undefined) {
+        return { ...tempMapping, headerIndex: i };
+      }
+    }
+    return mapping;
+  };
+
+  const parseCurrency = (val) => {
+    if (val === undefined || val === null || val === '') return 0;
+    const clean = val.toString().replace(/[^\d.-]/g, '');
+    const num = parseFloat(clean);
+    return isNaN(num) ? 0 : num;
+  };
+
+  const processComparison = () => {
+    if (!reports.orders || !reports.afc) return;
+
+    const ordersMap = detectHeaders(reports.orders, {
+      id: ['pg_order_id', 'pg_order', 'order_id', 'orderid'],
+      revenue: ['total_amount', 'total amount', 'fare', 'amount'],
+      type: ['ticket_type', 'ticket type', 'type']
+    });
+
+    const afcMap = detectHeaders(reports.afc, {
+      id: ['merchant_order_id', 'merchant_order', 'merchant order', 'order_id', 'orderid'],
+      revenue: ['actual_fare', 'actual fare', 'fare', 'amount'],
+      type: ['ticket_type', 'ticket type', 'type'],
+      status: ['ticket_status', 'ticket status', 'status']
+    });
+
+    if (ordersMap.headerIndex === -1 || afcMap.headerIndex === -1) {
+      alert("Could not detect headers in one or both files. Please ensure column names are correct.");
+      return;
+    }
+
+    const ourRows = reports.orders.slice(ordersMap.headerIndex + 1);
+    const afcRows = reports.afc.slice(afcMap.headerIndex + 1);
+
+    const ourDataMap = new Map();
+    let ourTotalRevenue = 0;
+    const missingInAfc = [];
+
+    ourRows.forEach(row => {
+      const id = row[ordersMap.id]?.toString().trim();
+      if (!id) return;
+      
+      const rev = parseCurrency(row[ordersMap.revenue]);
+      const type = row[ordersMap.type]?.toString().trim() || 'N/A';
+      
+      ourTotalRevenue += rev;
+      ourDataMap.set(id, { id, rev, type });
+    });
+
+    const afcDataMap = new Map();
+    let afcTotalRevenue = 0;
+    const missingInOur = [];
+
+    afcRows.forEach(row => {
+      const id = row[afcMap.id]?.toString().trim();
+      if (!id) return;
+
+      const rev = parseCurrency(row[afcMap.revenue]);
+      const type = row[afcMap.type]?.toString().trim() || 'N/A';
+
+      afcTotalRevenue += rev;
+      afcDataMap.set(id, { id, rev, type });
+    });
+
+    // Cross Match
+    ourDataMap.forEach((val, id) => {
+      if (!afcDataMap.has(id)) {
+        missingInAfc.push({ id, amount: val.rev, type: val.type });
+      }
+    });
+
+    afcDataMap.forEach((val, id) => {
+      if (!ourDataMap.has(id)) {
+        missingInOur.push({ id, amount: val.rev, type: val.type });
+      }
+    });
+
+    setResults({
+      missingInAfc,
+      missingInOur,
+      ourTotalRevenue,
+      afcTotalRevenue,
+      revenueMismatch: ourTotalRevenue - afcTotalRevenue,
+      totalOrdersOur: ourDataMap.size,
+      totalOrdersAfc: afcDataMap.size
+    });
+  };
+
+  const exportMissing = (data, filename) => {
+    if (!data.length) return;
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Missing Orders");
+    XLSX.writeFile(wb, `${filename}.xlsx`);
+  };
+
+  const [searchId, setSearchId] = useState('');
+  const [searchResult, setSearchResult] = useState(null);
+
+  const handleSearch = () => {
+    if (!reports.afc) {
+      alert("Please upload the AFC Report first.");
+      return;
+    }
+    const afcMap = detectHeaders(reports.afc, {
+      id: ['merchant_order_id', 'merchant_order', 'merchant order', 'order_id', 'orderid'],
+      revenue: ['actual_fare', 'actual fare', 'fare', 'amount'],
+      type: ['ticket_type', 'type']
+    });
+
+    if (afcMap.headerIndex === -1) {
+      alert("Could not detect headers in AFC file.");
+      return;
+    }
+
+    const afcRows = reports.afc.slice(afcMap.headerIndex + 1);
+    const target = searchId.trim().toLowerCase();
+    const found = afcRows.find(row => {
+      const id = row[afcMap.id]?.toString().trim().toLowerCase();
+      return id === target;
+    });
+
+    if (found) {
+      setSearchResult({
+        found: true,
+        id: found[afcMap.id],
+        amount: parseCurrency(found[afcMap.revenue]),
+        type: found[afcMap.type] || 'N/A',
+        status: found[afcMap.status] || 'N/A'
+      });
+    } else {
+      setSearchResult({ found: false, id: searchId });
+    }
+  };
+
+  return (
+    <div className="space-y-12 animate-in fade-in slide-in-from-right-4 duration-500">
+      <header className="space-y-6">
+        <Link to="/" className="inline-flex items-center gap-2 text-slate-400 hover:text-white transition-colors">
+          <ArrowLeft className="w-4 h-4" /> Back to Suite
+        </Link>
+        <div className="text-center space-y-2">
+          <h1 className="text-5xl font-bold bg-gradient-to-br from-white to-primary bg-clip-text text-transparent">
+            Compare with AFC
+          </h1>
+          <p className="text-slate-400 text-lg">Quickly verify Order IDs and reconcile revenue against AFC reports.</p>
+        </div>
+      </header>
+
+      {/* Manual Search Section */}
+      <section className="glass p-8 rounded-3xl space-y-6">
+        <div className="flex flex-col md:flex-row gap-4 items-end">
+          <div className="flex-1 space-y-2">
+            <label className="text-sm font-bold text-slate-400 ml-1">Paste Order ID to Check in AFC</label>
+            <input 
+              type="text" 
+              value={searchId}
+              onChange={(e) => setSearchId(e.target.value)}
+              placeholder="Enter pg_order_id (e.g. 123456789)"
+              className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 focus:border-primary/50 transition-colors outline-none"
+            />
+          </div>
+          <button 
+            onClick={handleSearch}
+            className="btn btn-primary px-8 py-4 h-[58px]"
+          >
+            Check in AFC
+          </button>
+        </div>
+
+        {searchResult && (
+          <div className={`p-6 rounded-2xl animate-in zoom-in-95 duration-300 ${searchResult.found ? 'bg-green-500/10 border border-green-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
+            {searchResult.found ? (
+              <div className="flex items-center gap-4">
+                <CheckCircle2 className="w-8 h-8 text-green-400" />
+                <div>
+                  <h3 className="font-bold text-green-400 text-lg">Order Found!</h3>
+                  <p className="text-sm text-slate-400">
+                    ID: <span className="text-white font-mono">{searchResult.id}</span> | 
+                    Fare: <span className="text-white font-bold">₹{searchResult.amount}</span> | 
+                    Type: <span className="text-white capitalize">{searchResult.type}</span> |
+                    Status: <span className={`font-bold ${searchResult.status.toLowerCase().includes('success') || searchResult.status.toLowerCase().includes('paid') ? 'text-green-400' : 'text-yellow-400'}`}>{searchResult.status}</span>
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-4">
+                <AlertCircle className="w-8 h-8 text-red-400" />
+                <div>
+                  <h3 className="font-bold text-red-400 text-lg">Not Found</h3>
+                  <p className="text-sm text-slate-400">The Order ID <span className="text-white font-mono">{searchResult.id}</span> does not exist in the uploaded AFC report.</p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <div className="flex items-center gap-4">
+        <div className="h-px bg-white/10 flex-1"></div>
+        <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">OR Bulk Comparison</span>
+        <div className="h-px bg-white/10 flex-1"></div>
+      </div>
+
+      {/* Upload Sections */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="relative group">
+          <label className={`drop-zone block p-8 ${reports.orders ? 'border-green-500/50 bg-green-500/5' : ''}`}>
+            <input 
+              key={reports.orders ? 'orders-loaded' : 'orders-empty'}
+              type="file" 
+              className="hidden" 
+              onChange={(e) => handleFileUpload(e, 'orders')} 
+            />
+            <div className="flex flex-col items-center space-y-3">
+              <FileText className={`w-10 h-10 ${reports.orders ? 'text-green-400' : 'text-primary'}`} />
+              <div className="font-semibold text-lg">{filenames.orders || 'Orders Report (Our Side)'}</div>
+              <p className="text-xs text-slate-500">pg_order_id, num_of_tickets, ticket_type, total_amount</p>
+              {reports.orders && (
+                <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
+                  File Loaded
+                </div>
+              )}
+            </div>
+          </label>
+          {reports.orders && (
+            <button 
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setReports(prev => ({ ...prev, orders: null })); setFilenames(prev => ({ ...prev, orders: '' })); setResults(null); }}
+              className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
+              title="Remove File"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        <div className="relative group">
+          <label className={`drop-zone block p-8 ${reports.afc ? 'border-green-500/50 bg-green-500/5' : ''}`}>
+            <input 
+              key={reports.afc ? 'afc-loaded' : 'afc-empty'}
+              type="file" 
+              className="hidden" 
+              onChange={(e) => handleFileUpload(e, 'afc')} 
+            />
+            <div className="flex flex-col items-center space-y-3">
+              <Layout className={`w-10 h-10 ${reports.afc ? 'text-green-400' : 'text-primary'}`} />
+              <div className="font-semibold text-lg">{filenames.afc || 'AFC Report'}</div>
+              <p className="text-xs text-slate-500">MERCHANT_ORDER_ID, ACTUAL_FARE, TICKET_TYPE</p>
+              {reports.afc && (
+                <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
+                  File Loaded
+                </div>
+              )}
+            </div>
+          </label>
+          {reports.afc && (
+            <button 
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setReports(prev => ({ ...prev, afc: null })); setFilenames(prev => ({ ...prev, afc: '' })); setResults(null); }}
+              className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
+              title="Remove File"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="text-center">
+        <button 
+          onClick={processComparison}
+          disabled={!reports.orders || !reports.afc}
+          className="btn btn-primary px-12 py-4 text-xl"
+        >
+          Compare Reports
+        </button>
+      </div>
+
+      {results && (
+        <section className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          {/* Revenue & Stats Summary */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="card">
+              <div className="flex items-center gap-3 mb-2">
+                <DollarSign className="w-5 h-5 text-primary" />
+                <h3 className="text-xs text-slate-500 font-bold tracking-widest uppercase">Our Revenue</h3>
+              </div>
+              <p className="text-3xl font-bold">₹{results.ourTotalRevenue.toLocaleString()}</p>
+              <p className="text-xs text-slate-400 mt-2">{results.totalOrdersOur} Orders</p>
+            </div>
+            <div className="card">
+              <div className="flex items-center gap-3 mb-2">
+                <TrendingUp className="w-5 h-5 text-purple-400" />
+                <h3 className="text-xs text-slate-500 font-bold tracking-widest uppercase">AFC Revenue</h3>
+              </div>
+              <p className="text-3xl font-bold">₹{results.afcTotalRevenue.toLocaleString()}</p>
+              <p className="text-xs text-slate-400 mt-2">{results.totalOrdersAfc} Orders</p>
+            </div>
+            <div className="card border-l-4 border-l-red-500">
+              <h3 className="text-xs text-slate-500 font-bold tracking-widest uppercase mb-2">Revenue Gap</h3>
+              <p className={`text-3xl font-bold ${results.revenueMismatch === 0 ? 'text-green-400' : 'text-red-400'}`}>
+                ₹{Math.abs(results.revenueMismatch).toLocaleString()}
+              </p>
+              <p className="text-xs text-slate-400 mt-2">
+                {results.revenueMismatch > 0 ? 'Surplus on our side' : results.revenueMismatch < 0 ? 'Deficit on our side' : 'Perfect Match'}
+              </p>
+            </div>
+            <div className="card">
+              <h3 className="text-xs text-slate-500 font-bold tracking-widest uppercase mb-2">Sync Status</h3>
+              <div className="flex items-center gap-2">
+                {results.missingInAfc.length === 0 && results.missingInOur.length === 0 ? (
+                  <>
+                    <CheckCircle2 className="w-6 h-6 text-green-400" />
+                    <span className="text-green-400 font-bold">In Sync</span>
+                  </>
+                ) : (
+                  <>
+                    <AlertCircle className="w-6 h-6 text-red-400" />
+                    <span className="text-red-400 font-bold">Mismatch</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Tables Section */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+            {/* Missing in AFC */}
+            <div className="glass rounded-3xl overflow-hidden">
+              <div className="p-6 border-b border-white/10 flex justify-between items-center bg-white/5">
+                <div>
+                  <h2 className="text-xl font-bold">Missing in AFC</h2>
+                  <p className="text-xs text-slate-500">Orders we have, but AFC doesn't.</p>
+                </div>
+                <button 
+                  onClick={() => exportMissing(results.missingInAfc, 'missing_in_afc')}
+                  disabled={results.missingInAfc.length === 0}
+                  className="btn btn-secondary py-2 px-4 text-xs flex items-center gap-2"
+                >
+                  <Download className="w-3 h-3" /> Export
+                </button>
+              </div>
+              <div className="overflow-x-auto max-h-[400px]">
+                <table className="w-full text-left">
+                  <thead className="bg-white/10 sticky top-0 z-10">
+                    <tr>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Order ID</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Type</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {results.missingInAfc.length > 0 ? (
+                      results.missingInAfc.map((res, i) => (
+                        <tr key={i} className="hover:bg-white/5 transition-colors">
+                          <td className="p-4 font-mono text-sm">{res.id}</td>
+                          <td className="p-4 capitalize text-sm">{res.type}</td>
+                          <td className="p-4 text-sm font-bold">₹{res.amount}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan="3" className="p-12 text-center text-slate-500 italic">No missing orders found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Missing in Our Report */}
+            <div className="glass rounded-3xl overflow-hidden">
+              <div className="p-6 border-b border-white/10 flex justify-between items-center bg-white/5">
+                <div>
+                  <h2 className="text-xl font-bold">Missing in Our Report</h2>
+                  <p className="text-xs text-slate-500">Orders AFC has, but we don't.</p>
+                </div>
+                <button 
+                  onClick={() => exportMissing(results.missingInOur, 'missing_in_our_report')}
+                  disabled={results.missingInOur.length === 0}
+                  className="btn btn-secondary py-2 px-4 text-xs flex items-center gap-2"
+                >
+                  <Download className="w-3 h-3" /> Export
+                </button>
+              </div>
+              <div className="overflow-x-auto max-h-[400px]">
+                <table className="w-full text-left">
+                  <thead className="bg-white/10 sticky top-0 z-10">
+                    <tr>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Order ID</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Type</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {results.missingInOur.length > 0 ? (
+                      results.missingInOur.map((res, i) => (
+                        <tr key={i} className="hover:bg-white/5 transition-colors">
+                          <td className="p-4 font-mono text-sm">{res.id}</td>
+                          <td className="p-4 capitalize text-sm">{res.type}</td>
+                          <td className="p-4 text-sm font-bold">₹{res.amount}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan="3" className="p-12 text-center text-slate-500 italic">No missing orders found.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+};
+
+export default AfcComparer;

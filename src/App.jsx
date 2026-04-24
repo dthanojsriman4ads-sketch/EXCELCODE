@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Home from './pages/Home';
 import TicketValidator from './pages/TicketValidator';
+import AfcComparer from './pages/AfcComparer';
 
 const App = () => {
   return (
@@ -17,6 +18,7 @@ const App = () => {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/ticket-validator" element={<TicketValidator />} />
+            <Route path="/compare-afc" element={<AfcComparer />} />
           </Routes>
         </div>
         

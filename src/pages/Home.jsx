@@ -12,6 +12,14 @@ const tools = [
     status: 'Ready'
   },
   {
+    id: 'compare-afc',
+    title: 'Compare with AFC',
+    description: 'Cross-match order IDs and compare revenue between internal reports and AFC reports.',
+    icon: <Calculator className="w-8 h-8 text-primary" />,
+    path: '/compare-afc',
+    status: 'Ready'
+  },
+  {
     id: 'placeholder-1',
     title: 'Data Formatter',
     description: 'Clean and format messy CSV/Excel data for database imports (Coming Soon).',
@@ -23,7 +31,7 @@ const tools = [
     id: 'placeholder-2',
     title: 'Instant Reporter',
     description: 'Generate PDF reports from raw transaction data in seconds (Coming Soon).',
-    icon: <Calculator className="w-8 h-8 text-slate-500" />,
+    icon: <Zap className="w-8 h-8 text-slate-500" />,
     path: '/',
     status: 'Upcoming'
   }
