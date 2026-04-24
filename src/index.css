@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #6366f1;
+  --color-primary-hover: #4f46e5;
+  --font-outfit: "Outfit", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-950 text-slate-50 min-h-screen font-outfit antialiased overflow-x-hidden relative;
+  }
+}
+
+@layer components {
+  /* Use direct CSS for glass to avoid @apply order issues */
+  .glass {
+    @apply bg-slate-900/70 backdrop-blur-xl border border-white/10;
+  }
+
+  .drop-zone {
+    /* Inlined glass styles here */
+    @apply bg-slate-900/70 backdrop-blur-xl border border-white/10;
+    @apply border-2 border-dashed border-white/10 rounded-3xl transition-all duration-300 cursor-pointer text-center hover:border-primary hover:bg-primary/5 hover:-translate-y-1;
+  }
+  
+  .card {
+    /* Inlined glass styles here */
+    @apply bg-slate-900/70 backdrop-blur-xl border border-white/10;
+    @apply p-6 rounded-2xl text-center;
+  }
+
+  .status-badge {
+    @apply px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider;
+  }
+
+  .btn {
+    @apply px-6 py-2.5 rounded-xl font-bold transition-all duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-white hover:bg-primary-hover hover:scale-[1.02] shadow-lg shadow-primary/20;
+  }
+
+  .btn-secondary {
+    @apply bg-white/10 text-white hover:bg-white/20;
+  }
+}
+
+/* Custom Animations */
+@keyframes move {
+  from { transform: translate(0, 0); }
+  to { transform: translate(50px, 50px); }
+}
+
+.blob {
+  @apply absolute rounded-full opacity-20 blur-[100px];
+  width: 400px;
+  height: 400px;
+}
+
+.animate-move-slow {
+  animation: move 10s infinite alternate;
+}
+
+.animate-move-slower {
+  animation: move 12s infinite alternate-reverse;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-white/10 rounded-full hover:bg-white/20;
+}
