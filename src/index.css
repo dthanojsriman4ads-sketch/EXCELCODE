@@ -45,6 +45,11 @@
   .btn-secondary {
     @apply bg-white/10 text-white hover:bg-white/20;
   }
+
+  .sticky-header {
+    @apply sticky top-0 z-20 bg-slate-900/95 backdrop-blur-md shadow-sm;
+    /* Ensure the background covers the scrolling content */
+  }
 }
 
 /* Custom Animations */

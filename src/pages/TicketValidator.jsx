@@ -4,10 +4,11 @@ import { Upload, FileText, Layout, Download, ArrowLeft, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const TicketValidator = () => {
-  const [mode, setMode] = useState('single');
   const [results, setResults] = useState([]);
   const [dualData, setDualData] = useState({ orders: null, tickets: null });
-  const [filenames, setFilenames] = useState({ single: '', orders: '', tickets: '' });
+  const [filenames, setFilenames] = useState({ orders: '', tickets: '' });
+  const [isUploading, setIsUploading] = useState({ orders: false, tickets: false });
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const stats = useMemo(() => {
     const total = results.length;
@@ -20,40 +21,52 @@ const TicketValidator = () => {
     const file = e.target.files[0];
     if (!file) return;
 
+    setIsUploading(prev => ({ ...prev, [type]: true }));
     setFilenames(prev => ({ ...prev, [type]: file.name }));
 
     const reader = new FileReader();
     reader.onload = (evt) => {
-      const bstr = evt.target.result;
-      const wb = XLSX.read(bstr, { type: 'binary' });
-      const wsname = wb.SheetNames[0];
-      const ws = wb.Sheets[wsname];
-      const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
-
-      if (mode === 'single') {
-        processSingle(data);
-      } else {
+      try {
+        const bstr = evt.target.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
         setDualData(prev => ({ ...prev, [type]: data }));
+      } catch (err) {
+        console.error("Upload error:", err);
+        alert("Error reading file.");
+      } finally {
+        setIsUploading(prev => ({ ...prev, [type]: false }));
       }
+    };
+    reader.onerror = () => {
+      alert("FileReader error.");
+      setIsUploading(prev => ({ ...prev, [type]: false }));
     };
     reader.readAsBinaryString(file);
   };
 
-  const processSingle = (data) => {
-    const colMap = detectColumns(data, ['pg_order', 'num', 'order_id', 'type']);
-    const rows = data.slice(colMap.headerIndex + 1);
-    const frequencies = countFrequencies(rows, colMap.order_id);
-    runValidation(rows, frequencies, colMap);
-  };
-
   const processDual = () => {
     if (!dualData.orders || !dualData.tickets) return;
-    const ordersColMap = detectColumns(dualData.orders, ['pg_order', 'num', 'type']);
-    const ordersRows = dualData.orders.slice(ordersColMap.headerIndex + 1);
-    const ticketsColMap = detectColumns(dualData.tickets, ['order_id']);
-    const ticketsRows = dualData.tickets.slice(ticketsColMap.headerIndex + 1);
-    const frequencies = countFrequencies(ticketsRows, ticketsColMap.order_id);
-    runValidation(ordersRows, frequencies, ordersColMap);
+    setIsProcessing(true);
+    setResults([]);
+
+    setTimeout(() => {
+      try {
+        const ordersColMap = detectColumns(dualData.orders, ['pg_order', 'num', 'type']);
+        const ordersRows = dualData.orders.slice(ordersColMap.headerIndex + 1);
+        const ticketsColMap = detectColumns(dualData.tickets, ['order_id']);
+        const ticketsRows = dualData.tickets.slice(ticketsColMap.headerIndex + 1);
+        const frequencies = countFrequencies(ticketsRows, ticketsColMap.order_id);
+        runValidation(ordersRows, frequencies, ordersColMap);
+      } catch (err) {
+        console.error("Processing error:", err);
+        alert("Error processing reports.");
+      } finally {
+        setIsProcessing(false);
+      }
+    }, 100);
   };
 
   const detectColumns = (data, keywords) => {
@@ -124,124 +137,90 @@ const TicketValidator = () => {
         </div>
       </header>
 
-      {/* Mode Switcher */}
-      <div className="flex glass p-1.5 rounded-2xl w-fit mx-auto gap-1">
-        <button 
-          onClick={() => { setMode('single'); setResults([]); }}
-          className={`px-6 py-2 rounded-xl font-semibold transition-all ${mode === 'single' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-slate-400 hover:text-white'}`}
-        >
-          Single File
-        </button>
-        <button 
-          onClick={() => { setMode('dual'); setResults([]); }}
-          className={`px-6 py-2 rounded-xl font-semibold transition-all ${mode === 'dual' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-slate-400 hover:text-white'}`}
-        >
-          Two Reports
-        </button>
-      </div>
-
       {/* Upload Sections */}
       <div className="space-y-6">
-        {mode === 'single' ? (
-          <div className="relative group">
-            <label className={`drop-zone block p-12 ${results.length > 0 ? 'border-green-500/50 bg-green-500/5' : ''}`}>
-              <input 
-                key={results.length > 0 ? 'single-loaded' : 'single-empty'}
-                type="file" 
-                className="hidden" 
-                onChange={(e) => handleFileUpload(e, 'single')} 
-              />
-              <div className="flex flex-col items-center space-y-4">
-                <Upload className={`w-16 h-16 ${results.length > 0 ? 'text-green-400' : 'text-primary'}`} />
-                <div className="text-xl">
-                  {results.length > 0 ? filenames.single : <>Drag & drop combined file or <span className="text-primary font-bold underline">browse</span></>}
-                </div>
-                <p className="text-sm text-slate-500">Requires pg_order_id, num_of_tickets, order_id, ticket_type</p>
-              </div>
-            </label>
-            {results.length > 0 && (
-              <button 
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setResults([]); setFilenames(prev => ({ ...prev, single: '' })); }}
-                className="absolute top-6 right-6 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
-                title="Remove File"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="relative group">
-                <label className={`drop-zone block p-8 ${dualData.orders ? 'border-green-500/50 bg-green-500/5' : ''}`}>
-                  <input 
-                    key={dualData.orders ? 'orders-loaded' : 'orders-empty'}
-                    type="file" 
-                    className="hidden" 
-                    onChange={(e) => handleFileUpload(e, 'orders')} 
-                  />
-                  <div className="flex flex-col items-center space-y-3">
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="relative group">
+              <label className={`drop-zone block p-8 ${dualData.orders ? 'border-green-500/50 bg-green-500/5' : ''} ${isUploading.orders ? 'opacity-50 pointer-events-none' : ''}`}>
+                <input 
+                  key={dualData.orders ? 'orders-loaded' : 'orders-empty'}
+                  type="file" 
+                  className="hidden" 
+                  onChange={(e) => handleFileUpload(e, 'orders')} 
+                  disabled={isUploading.orders}
+                />
+                <div className="flex flex-col items-center space-y-3">
+                  {isUploading.orders ? (
+                    <div className="w-10 h-10 border-4 border-primary/30 border-t-primary rounded-full animate-spin"></div>
+                  ) : (
                     <FileText className={`w-10 h-10 ${dualData.orders ? 'text-green-400' : 'text-primary'}`} />
-                    <div className="font-semibold text-lg">{filenames.orders || 'Orders Report'}</div>
-                    <p className="text-xs text-slate-500">ID, Count, Type</p>
-                    {dualData.orders && (
-                      <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
-                        File Loaded
-                      </div>
-                    )}
-                  </div>
-                </label>
-                {dualData.orders && (
-                  <button 
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDualData(prev => ({ ...prev, orders: null })); setFilenames(prev => ({ ...prev, orders: '' })); setResults([]); }}
-                    className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
-                    title="Remove File"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-              <div className="relative group">
-                <label className={`drop-zone block p-8 ${dualData.tickets ? 'border-green-500/50 bg-green-500/5' : ''}`}>
-                  <input 
-                    key={dualData.tickets ? 'tickets-loaded' : 'tickets-empty'}
-                    type="file" 
-                    className="hidden" 
-                    onChange={(e) => handleFileUpload(e, 'tickets')} 
-                  />
-                  <div className="flex flex-col items-center space-y-3">
-                    <Layout className={`w-10 h-10 ${dualData.tickets ? 'text-green-400' : 'text-primary'}`} />
-                    <div className="font-semibold text-lg">{filenames.tickets || 'Tickets Report'}</div>
-                    <p className="text-xs text-slate-500">Order ID (Scan)</p>
-                    {dualData.tickets && (
-                      <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
-                        File Loaded
-                      </div>
-                    )}
-                  </div>
-                </label>
-                {dualData.tickets && (
-                  <button 
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDualData(prev => ({ ...prev, tickets: null })); setFilenames(prev => ({ ...prev, tickets: '' })); setResults([]); }}
-                    className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
-                    title="Remove File"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
+                  )}
+                  <div className="font-semibold text-lg">{isUploading.orders ? 'Uploading...' : (filenames.orders || 'Orders Report')}</div>
+                  <p className="text-xs text-slate-500 text-center">ID, Count, Type</p>
+                  {dualData.orders && !isUploading.orders && (
+                    <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
+                      File Loaded
+                    </div>
+                  )}
+                </div>
+              </label>
+              {dualData.orders && (
+                <button 
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDualData(prev => ({ ...prev, orders: null })); setFilenames(prev => ({ ...prev, orders: '' })); setResults([]); }}
+                  className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
+                  title="Remove File"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
             </div>
-            <div className="text-center">
-              <button 
-                onClick={processDual}
-                disabled={!dualData.orders || !dualData.tickets}
-                className="btn btn-primary px-12 py-4 text-xl"
-              >
-                Process Reports
-              </button>
+            <div className="relative group">
+              <label className={`drop-zone block p-8 ${dualData.tickets ? 'border-green-500/50 bg-green-500/5' : ''} ${isUploading.tickets ? 'opacity-50 pointer-events-none' : ''}`}>
+                <input 
+                  key={dualData.tickets ? 'tickets-loaded' : 'tickets-empty'}
+                  type="file" 
+                  className="hidden" 
+                  onChange={(e) => handleFileUpload(e, 'tickets')} 
+                  disabled={isUploading.tickets}
+                />
+                <div className="flex flex-col items-center space-y-3">
+                  {isUploading.tickets ? (
+                    <div className="w-10 h-10 border-4 border-primary/30 border-t-primary rounded-full animate-spin"></div>
+                  ) : (
+                    <Layout className={`w-10 h-10 ${dualData.tickets ? 'text-green-400' : 'text-primary'}`} />
+                  )}
+                  <div className="font-semibold text-lg">{isUploading.tickets ? 'Uploading...' : (filenames.tickets || 'Tickets Report')}</div>
+                  <p className="text-xs text-slate-500 text-center">Order ID (Scan)</p>
+                  {dualData.tickets && !isUploading.tickets && (
+                    <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
+                      File Loaded
+                    </div>
+                  )}
+                </div>
+              </label>
+              {dualData.tickets && (
+                <button 
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDualData(prev => ({ ...prev, tickets: null })); setFilenames(prev => ({ ...prev, tickets: '' })); setResults([]); }}
+                  className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
+                  title="Remove File"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
-        )}
+          <div className="text-center">
+            <button 
+              onClick={processDual}
+              disabled={!dualData.orders || !dualData.tickets || isProcessing}
+              className="btn btn-primary px-12 py-4 text-xl flex items-center gap-4 mx-auto"
+            >
+              {isProcessing && <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>}
+              {isProcessing ? 'Processing Reports...' : 'Process Reports'}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Results Section */}
@@ -271,7 +250,7 @@ const TicketValidator = () => {
             </div>
             <div className="overflow-x-auto max-h-[500px]">
               <table className="w-full text-left">
-                <thead className="bg-white/5 sticky top-0 z-10">
+                <thead className="sticky-header">
                   <tr>
                     <th className="p-4 text-xs font-bold text-slate-500 uppercase">PG Order ID</th>
                     <th className="p-4 text-xs font-bold text-slate-500 uppercase">Type</th>
