@@ -1,15 +1,24 @@
 import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { Upload, FileText, Layout, Download, ArrowLeft, CheckCircle2, AlertCircle, TrendingUp, DollarSign, X } from 'lucide-react';
+import { Upload, FileText, Layout, Download, ArrowLeft, CheckCircle2, AlertCircle, TrendingUp, DollarSign, X, Train } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const AfcComparer = () => {
+  const [view, setView] = useState('selection'); // 'selection', 'dtvm', 'tsavaari'
   const [reports, setReports] = useState({ orders: null, webhook: null, afc: null });
   const [filenames, setFilenames] = useState({ orders: '', webhook: '', afc: '' });
   const [afcFilter, setAfcFilter] = useState('DTVM'); // 'DTVM' or 'NOT_DTVM'
   const [results, setResults] = useState(null);
   const [isUploading, setIsUploading] = useState({ orders: false, webhook: false, afc: false });
   const [isProcessing, setIsProcessing] = useState(false);
+
+  const resetState = (newView) => {
+    setView(newView);
+    setReports({ orders: null, webhook: null, afc: null });
+    setFilenames({ orders: '', webhook: '', afc: '' });
+    setResults(null);
+    setAfcFilter(newView === 'dtvm' ? 'DTVM' : 'NOT_DTVM');
+  };
 
   const handleFileUpload = (e, type) => {
     const file = e.target.files[0];
@@ -47,12 +56,9 @@ const AfcComparer = () => {
       const row = (data[i] || []).map(c => c?.toString().toLowerCase().trim() || "");
       if (row.length === 0) continue;
 
-      let matchCount = 0;
       let tempMapping = {};
-
       row.forEach((cell, idx) => {
         Object.entries(keywords).forEach(([key, matches]) => {
-          // Check for exact match first, then partial
           if (matches.some(m => cell === m || cell.includes(m))) {
             if (tempMapping[key] === undefined || cell === keywords[key][0]) {
               tempMapping[key] = idx;
@@ -61,7 +67,6 @@ const AfcComparer = () => {
         });
       });
 
-      // We consider it a header row if at least ID and Revenue are found
       if (tempMapping.id !== undefined && tempMapping.revenue !== undefined) {
         return { ...tempMapping, headerIndex: i };
       }
@@ -78,7 +83,7 @@ const AfcComparer = () => {
 
   const processComparison = () => {
     if (!reports.orders && !reports.webhook) {
-      alert("Please upload at least one order report (Orders or Webhook).");
+      alert("Please upload the reports.");
       return;
     }
     if (!reports.afc) {
@@ -89,15 +94,24 @@ const AfcComparer = () => {
     setIsProcessing(true);
     setResults(null);
 
-    // Using setTimeout to allow the UI to render the "Processing" state
     setTimeout(() => {
       try {
-        const orderKeywords = {
-          id: ['pg_order_id', 'pg_order', 'order_id', 'orderid'],
-          revenue: ['total_amount', 'total amount', 'fare', 'amount'],
-          type: ['ticket_type', 'ticket type', 'type'],
-          tickets: ['num_of_tickets', 'no of tickets', 'tickets', 'count']
-        };
+        let orderKeywords;
+        if (view === 'dtvm') {
+          orderKeywords = {
+            id: ['pg_order_id', 'pg_order', 'order_id', 'orderid'],
+            revenue: ['total_amount', 'total amount', 'fare', 'amount'],
+            type: ['ticket_type', 'ticket type', 'type'],
+            tickets: ['num_of_tickets', 'no of tickets', 'tickets', 'count']
+          };
+        } else {
+          // Tsavaari
+          orderKeywords = {
+            id: ['tsavaari order id', 'tsavaari_order_id', 'tsavaari order', 'order_id'],
+            revenue: ['ticket fare', 'ticket_fare', 'fare', 'amount'],
+            status: ['ticket status', 'ticket_status', 'status']
+          };
+        }
 
         const afcKeywords = {
           id: ['merchant_order_id', 'merchant_order', 'merchant order', 'order_id', 'orderid'],
@@ -127,13 +141,27 @@ const AfcComparer = () => {
             if (!id) return;
             
             const rev = parseCurrency(row[mapping.revenue]);
-            const type = row[mapping.type]?.toString().trim().toLowerCase() || 'single';
-            const tickets = parseInt(row[mapping.tickets]) || 1;
             
-            const expectedCount = type.includes('return') ? tickets * 2 : tickets;
+            if (view === 'dtvm') {
+              const type = row[mapping.type]?.toString().trim().toLowerCase() || 'single';
+              const tickets = parseInt(row[mapping.tickets]) || 1;
+              const expectedCount = type.includes('return') ? tickets * 2 : tickets;
 
-            if (!combinedOrdersMap.has(id)) {
-              combinedOrdersMap.set(id, { id, rev, type, tickets, expectedCount });
+              if (!combinedOrdersMap.has(id)) {
+                combinedOrdersMap.set(id, { id, rev, type, tickets, expectedCount });
+                ourTotalRevenue += rev;
+              }
+            } else {
+              // Tsavaari - Count repetitions in the Tsavaari report itself
+              const status = row[mapping.status]?.toString().trim() || 'N/A';
+              if (status.toUpperCase() === 'REFUNDED') return;
+
+              const existing = combinedOrdersMap.get(id) || { id, rev: 0, tickets: 0, expectedCount: 0, type: 'Tsavaari' };
+              existing.tickets += 1;
+              existing.expectedCount += 1; // 1 entry in Tsavaari report = 1 expected in AFC
+              existing.rev += rev;
+              
+              combinedOrdersMap.set(id, existing);
               ourTotalRevenue += rev;
             }
           });
@@ -154,6 +182,9 @@ const AfcComparer = () => {
           if (afcFilter === 'DTVM' && !isDTVM) return;
           if (afcFilter === 'NOT_DTVM' && isDTVM) return;
 
+          const status = row[afcMap.status]?.toString().trim().toUpperCase() || '';
+          if (status === 'REFUNDED') return;
+
           const rev = parseCurrency(row[afcMap.revenue]);
           afcTotalRevenue += rev;
 
@@ -172,7 +203,7 @@ const AfcComparer = () => {
             missingInAfc.push({ 
               id, 
               amount: val.rev, 
-              type: val.type, 
+              type: val.type || 'N/A', 
               tickets: val.tickets, 
               expected: val.expectedCount, 
               actual: 0,
@@ -182,7 +213,7 @@ const AfcComparer = () => {
             countMismatch.push({
               id,
               amount: val.rev,
-              type: val.type,
+              type: val.type || 'N/A',
               tickets: val.tickets,
               expected: val.expectedCount,
               actual: afcData.count,
@@ -218,15 +249,13 @@ const AfcComparer = () => {
 
   const exportMissing = (data, filename) => {
     if (!data.length) return;
-    // Map data to a cleaner format for Excel if needed
     const exportData = data.map(item => ({
       'Order ID': item.id,
-      'Ticket Type': item.type,
-      'Num of Tickets': item.tickets,
+      'Type/Status': item.type || 'N/A',
       'Expected in AFC': item.expected,
       'Actual in AFC': item.actual,
       'Amount': item.amount,
-      'Reason/Status': item.reason
+      'Reason': item.reason
     }));
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
@@ -250,20 +279,21 @@ const AfcComparer = () => {
     };
 
     const afcMap = detectHeaders(reports.afc, afcKeywords);
-
     if (afcMap.headerIndex === -1) {
       alert("Could not detect headers in AFC file.");
       return;
     }
 
     const afcRows = reports.afc.slice(afcMap.headerIndex + 1);
-    const target = searchId.trim().toLowerCase();
+    const target = searchId.trim().toUpperCase();
     
     const matches = afcRows.filter(row => {
       const id = row[afcMap.id]?.toString().trim().toUpperCase();
+      const status = row[afcMap.status]?.toString().trim().toUpperCase() || '';
+      
       const isDTVM = id.startsWith('DTVM');
       const matchesFilter = afcFilter === 'DTVM' ? isDTVM : !isDTVM;
-      return id === target.toUpperCase() && matchesFilter;
+      return id === target && matchesFilter && status !== 'REFUNDED';
     });
 
     if (matches.length > 0) {
@@ -281,17 +311,59 @@ const AfcComparer = () => {
     }
   };
 
+  if (view === 'selection') {
+    return (
+      <div className="space-y-12 animate-in fade-in zoom-in duration-500">
+        <header className="space-y-6 text-center">
+          <Link to="/" className="inline-flex items-center gap-2 text-slate-400 hover:text-white transition-colors">
+            <ArrowLeft className="w-4 h-4" /> Back to Suite
+          </Link>
+          <div className="space-y-2">
+            <h1 className="text-5xl font-bold bg-gradient-to-br from-white to-primary bg-clip-text text-transparent">
+              AFC Comparison Hub
+            </h1>
+            <p className="text-slate-400 text-lg">Select the report type you want to verify against AFC.</p>
+          </div>
+        </header>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+          <button 
+            onClick={() => resetState('dtvm')}
+            className="group glass p-12 rounded-[2.5rem] text-center hover:border-primary/50 transition-all hover:-translate-y-2"
+          >
+            <div className="w-20 h-20 bg-primary/10 rounded-3xl flex items-center justify-center mx-auto mb-6 group-hover:scale-110 transition-transform">
+              <FileText className="w-10 h-10 text-primary" />
+            </div>
+            <h2 className="text-2xl font-bold mb-3">DTVM Reports</h2>
+            <p className="text-slate-400 text-sm">Compare DTVM Batch & Webhook reports with AFC.</p>
+          </button>
+
+          <button 
+            onClick={() => resetState('tsavaari')}
+            className="group glass p-12 rounded-[2.5rem] text-center hover:border-primary/50 transition-all hover:-translate-y-2"
+          >
+            <div className="w-20 h-20 bg-purple-500/10 rounded-3xl flex items-center justify-center mx-auto mb-6 group-hover:scale-110 transition-transform">
+              <Train className="w-10 h-10 text-purple-400" />
+            </div>
+            <h2 className="text-2xl font-bold mb-3">Tsavaari Reports</h2>
+            <p className="text-slate-400 text-sm">Compare Tsavaari App reports with AFC.</p>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-12 animate-in fade-in slide-in-from-right-4 duration-500">
       <header className="space-y-6">
-        <Link to="/" className="inline-flex items-center gap-2 text-slate-400 hover:text-white transition-colors">
-          <ArrowLeft className="w-4 h-4" /> Back to Suite
-        </Link>
+        <button onClick={() => setView('selection')} className="inline-flex items-center gap-2 text-slate-400 hover:text-white transition-colors">
+          <ArrowLeft className="w-4 h-4" /> Back to Selection
+        </button>
         <div className="text-center space-y-2">
-          <h1 className="text-5xl font-bold bg-gradient-to-br from-white to-primary bg-clip-text text-transparent">
-            Compare with AFC
+          <h1 className="text-5xl font-bold bg-gradient-to-br from-white to-primary bg-clip-text text-transparent capitalize">
+            {view} vs AFC
           </h1>
-          <p className="text-slate-400 text-lg">Quickly verify Order IDs and reconcile revenue against AFC reports.</p>
+          <p className="text-slate-400 text-lg">Quickly verify Order IDs and reconcile revenue.</p>
         </div>
       </header>
 
@@ -299,12 +371,12 @@ const AfcComparer = () => {
       <section className="glass p-8 rounded-3xl space-y-6">
         <div className="flex flex-col md:flex-row gap-4 items-end">
           <div className="flex-1 space-y-2">
-            <label className="text-sm font-bold text-slate-400 ml-1">Paste Order ID to Check in AFC</label>
+            <label className="text-sm font-bold text-slate-400 ml-1 uppercase tracking-wider">Search Order ID in AFC</label>
             <input 
               type="text" 
               value={searchId}
               onChange={(e) => setSearchId(e.target.value)}
-              placeholder="Enter pg_order_id (e.g. 123456789)"
+              placeholder="Enter Order ID..."
               className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 focus:border-primary/50 transition-colors outline-none"
             />
           </div>
@@ -327,7 +399,6 @@ const AfcComparer = () => {
                     ID: <span className="text-white font-mono">{searchResult.id}</span> | 
                     Found: <span className="text-white font-bold">{searchResult.count} times</span> | 
                     Fare: <span className="text-white font-bold">₹{searchResult.amount}</span> | 
-                    Type: <span className="text-white capitalize">{searchResult.type}</span> |
                     Status: <span className={`font-bold ${searchResult.status.toLowerCase().includes('success') || searchResult.status.toLowerCase().includes('paid') ? 'text-green-400' : 'text-yellow-400'}`}>{searchResult.status}</span>
                   </p>
                 </div>
@@ -337,7 +408,7 @@ const AfcComparer = () => {
                 <AlertCircle className="w-8 h-8 text-red-400" />
                 <div>
                   <h3 className="font-bold text-red-400 text-lg">Not Found</h3>
-                  <p className="text-sm text-slate-400">The Order ID <span className="text-white font-mono">{searchResult.id}</span> does not exist in the uploaded AFC report.</p>
+                  <p className="text-sm text-slate-400">The Order ID <span className="text-white font-mono">{searchResult.id}</span> does not exist in the filtered AFC report.</p>
                 </div>
               </div>
             )}
@@ -352,7 +423,7 @@ const AfcComparer = () => {
       </div>
 
       {/* Upload Sections */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className={`grid grid-cols-1 ${view === 'dtvm' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-6`}>
         <div className="relative group">
           <label className={`drop-zone block p-8 ${reports.orders ? 'border-green-500/50 bg-green-500/5' : ''} ${isUploading.orders ? 'opacity-50 pointer-events-none' : ''}`}>
             <input 
@@ -368,8 +439,10 @@ const AfcComparer = () => {
               ) : (
                 <FileText className={`w-10 h-10 ${reports.orders ? 'text-green-400' : 'text-primary'}`} />
               )}
-              <div className="font-semibold text-lg">{isUploading.orders ? 'Uploading...' : (filenames.orders || 'Orders Report')}</div>
-              <p className="text-xs text-slate-500 text-center">pg_order_id, num_of_tickets, ticket_type, total_amount</p>
+              <div className="font-semibold text-lg uppercase">{isUploading.orders ? 'Uploading...' : (filenames.orders || `${view} Report`)}</div>
+              <p className="text-xs text-slate-500 text-center">
+                {view === 'dtvm' ? 'pg_order_id, num_of_tickets, ticket_type' : 'Tsavaari Order Id, Ticket Fare, Status'}
+              </p>
               {reports.orders && !isUploading.orders && (
                 <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
                   File Loaded
@@ -388,40 +461,42 @@ const AfcComparer = () => {
           )}
         </div>
 
-        <div className="relative group">
-          <label className={`drop-zone block p-8 ${reports.webhook ? 'border-green-500/50 bg-green-500/5' : ''} ${isUploading.webhook ? 'opacity-50 pointer-events-none' : ''}`}>
-            <input 
-              key={reports.webhook ? 'webhook-loaded' : 'webhook-empty'}
-              type="file" 
-              className="hidden" 
-              onChange={(e) => handleFileUpload(e, 'webhook')} 
-              disabled={isUploading.webhook}
-            />
-            <div className="flex flex-col items-center space-y-3">
-              {isUploading.webhook ? (
-                <div className="w-10 h-10 border-4 border-primary/30 border-t-primary rounded-full animate-spin"></div>
-              ) : (
-                <FileText className={`w-10 h-10 ${reports.webhook ? 'text-green-400' : 'text-primary'}`} />
-              )}
-              <div className="font-semibold text-lg">{isUploading.webhook ? 'Uploading...' : (filenames.webhook || 'Webhook Process Report')}</div>
-              <p className="text-xs text-slate-500 text-center">pg_order_id, num_of_tickets, ticket_type, total_amount</p>
-              {reports.webhook && !isUploading.webhook && (
-                <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
-                  File Loaded
-                </div>
-              )}
-            </div>
-          </label>
-          {reports.webhook && (
-            <button 
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setReports(prev => ({ ...prev, webhook: null })); setFilenames(prev => ({ ...prev, webhook: '' })); setResults(null); }}
-              className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
-              title="Remove File"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
+        {view === 'dtvm' && (
+          <div className="relative group">
+            <label className={`drop-zone block p-8 ${reports.webhook ? 'border-green-500/50 bg-green-500/5' : ''} ${isUploading.webhook ? 'opacity-50 pointer-events-none' : ''}`}>
+              <input 
+                key={reports.webhook ? 'webhook-loaded' : 'webhook-empty'}
+                type="file" 
+                className="hidden" 
+                onChange={(e) => handleFileUpload(e, 'webhook')} 
+                disabled={isUploading.webhook}
+              />
+              <div className="flex flex-col items-center space-y-3">
+                {isUploading.webhook ? (
+                  <div className="w-10 h-10 border-4 border-primary/30 border-t-primary rounded-full animate-spin"></div>
+                ) : (
+                  <FileText className={`w-10 h-10 ${reports.webhook ? 'text-green-400' : 'text-primary'}`} />
+                )}
+                <div className="font-semibold text-lg">{isUploading.webhook ? 'Uploading...' : (filenames.webhook || 'Webhook Report')}</div>
+                <p className="text-xs text-slate-500 text-center">pg_order_id, num_of_tickets, total_amount</p>
+                {reports.webhook && !isUploading.webhook && (
+                  <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
+                    File Loaded
+                  </div>
+                )}
+              </div>
+            </label>
+            {reports.webhook && (
+              <button 
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); setReports(prev => ({ ...prev, webhook: null })); setFilenames(prev => ({ ...prev, webhook: '' })); setResults(null); }}
+                className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
+                title="Remove File"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="relative group">
           <label className={`drop-zone block p-8 ${reports.afc ? 'border-green-500/50 bg-green-500/5' : ''} ${isUploading.afc ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -439,7 +514,7 @@ const AfcComparer = () => {
                 <Layout className={`w-10 h-10 ${reports.afc ? 'text-green-400' : 'text-primary'}`} />
               )}
               <div className="font-semibold text-lg">{isUploading.afc ? 'Uploading...' : (filenames.afc || 'AFC Report')}</div>
-              <p className="text-xs text-slate-500 text-center">MERCHANT_ORDER_ID, ACTUAL_FARE, TICKET_TYPE, TICKET_STATUS</p>
+              <p className="text-xs text-slate-500 text-center">MERCHANT_ORDER_ID, ACTUAL_FARE, TICKET_STATUS</p>
               {reports.afc && !isUploading.afc && (
                 <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
                   File Loaded
@@ -551,7 +626,7 @@ const AfcComparer = () => {
                   <thead className="sticky-header">
                     <tr>
                       <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Order ID</th>
-                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Type</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Type/Status</th>
                       <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Tickets</th>
                       <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Exp/Act</th>
                       <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Reason</th>
