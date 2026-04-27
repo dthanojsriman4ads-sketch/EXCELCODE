@@ -49,9 +49,9 @@ const Home = () => {
         <h1 className="text-6xl font-bold bg-gradient-to-br from-white to-primary bg-clip-text text-transparent">
           Utility Suite
         </h1>
-        <p className="text-slate-400 text-xl max-w-2xl mx-auto">
+        {/* <p className="text-slate-400 text-xl max-w-2xl mx-auto">
           Powerful, browser-based tools to streamline your administration and data validation workflows.
-        </p>
+        </p> */}
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">

@@ -23,7 +23,7 @@ const App = () => {
         </div>
         
         <footer className="mt-20 py-8 text-center text-slate-500 text-sm border-t border-white/5 w-full max-w-6xl">
-          &copy; {new Date().getFullYear()} Utility Suite. Built with React & Tailwind.
+          &copy; {new Date().getFullYear()} Utility Suite. 
         </footer>
       </div>
     </Router>

@@ -287,24 +287,29 @@ const AfcComparer = () => {
     const afcRows = reports.afc.slice(afcMap.headerIndex + 1);
     const target = searchId.trim().toUpperCase();
     
+    // Find ALL matches regardless of filter or status
     const matches = afcRows.filter(row => {
       const id = row[afcMap.id]?.toString().trim().toUpperCase();
-      const status = row[afcMap.status]?.toString().trim().toUpperCase() || '';
-      
-      const isDTVM = id.startsWith('DTVM');
-      const matchesFilter = afcFilter === 'DTVM' ? isDTVM : !isDTVM;
-      return id === target && matchesFilter && status !== 'REFUNDED';
+      return id && id === target;
     });
 
     if (matches.length > 0) {
       const first = matches[0];
+      const idStr = first[afcMap.id]?.toString() || '';
+      const isDTVM = idStr.toUpperCase().startsWith('DTVM');
+      const matchesFilter = afcFilter === 'DTVM' ? isDTVM : !isDTVM;
+      const status = first[afcMap.status]?.toString().trim().toUpperCase() || '';
+      const isRefunded = status === 'REFUNDED';
+
       setSearchResult({
         found: true,
         count: matches.length,
         id: first[afcMap.id],
         amount: parseCurrency(first[afcMap.revenue]),
         type: first[afcMap.type] || 'N/A',
-        status: first[afcMap.status] || 'N/A'
+        status: first[afcMap.status] || 'N/A',
+        isFiltered: !matchesFilter,
+        isRefunded: isRefunded
       });
     } else {
       setSearchResult({ found: false, id: searchId });
@@ -395,12 +400,24 @@ const AfcComparer = () => {
                 <CheckCircle2 className="w-8 h-8 text-green-400" />
                 <div>
                   <h3 className="font-bold text-green-400 text-lg">Order Found!</h3>
-                  <p className="text-sm text-slate-400">
-                    ID: <span className="text-white font-mono">{searchResult.id}</span> | 
-                    Found: <span className="text-white font-bold">{searchResult.count} times</span> | 
-                    Fare: <span className="text-white font-bold">₹{searchResult.amount}</span> | 
-                    Status: <span className={`font-bold ${searchResult.status.toLowerCase().includes('success') || searchResult.status.toLowerCase().includes('paid') ? 'text-green-400' : 'text-yellow-400'}`}>{searchResult.status}</span>
-                  </p>
+                  <div className="text-sm text-slate-400 space-y-1">
+                    <p>
+                      ID: <span className="text-white font-mono">{searchResult.id}</span> | 
+                      Found: <span className="text-white font-bold">{searchResult.count} times</span> | 
+                      Fare: <span className="text-white font-bold">₹{searchResult.amount}</span> | 
+                      Status: <span className={`font-bold ${searchResult.status.toLowerCase().includes('success') || searchResult.status.toLowerCase().includes('paid') ? 'text-green-400' : searchResult.isRefunded ? 'text-red-400' : 'text-yellow-400'}`}>{searchResult.status}</span>
+                    </p>
+                    {searchResult.isRefunded && (
+                      <p className="text-red-400 font-bold flex items-center gap-1 italic">
+                        <AlertCircle className="w-3 h-3" /> Note: This order is REFUNDED and will be ignored in bulk comparison.
+                      </p>
+                    )}
+                    {searchResult.isFiltered && (
+                      <p className="text-yellow-400 font-bold flex items-center gap-1 italic">
+                        <AlertCircle className="w-3 h-3" /> Note: This order belongs to the other report type ({afcFilter === 'DTVM' ? 'Not DTVM' : 'DTVM'}) and is currently filtered out.
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
             ) : (
