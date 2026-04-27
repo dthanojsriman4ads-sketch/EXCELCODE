@@ -329,12 +329,15 @@ const AfcComparer = () => {
       const matchesFilter = afcFilter === 'DTVM' ? isDTVM : !isDTVM;
       const status = first[afcMap.status]?.toString().trim().toUpperCase() || '';
       const isRefunded = status === 'REFUNDED';
+      
+      // Sum revenue for all matches
+      const totalAmount = matches.reduce((sum, row) => sum + parseCurrency(row[afcMap.revenue]), 0);
 
       setSearchResult({
         found: true,
         count: matches.length,
         id: first[afcMap.id],
-        amount: parseCurrency(first[afcMap.revenue]),
+        amount: totalAmount,
         type: first[afcMap.type] || 'N/A',
         status: first[afcMap.status] || 'N/A',
         isFiltered: !matchesFilter,
