@@ -196,6 +196,7 @@ const AfcComparer = () => {
 
         const missingInAfc = [];
         const countMismatch = [];
+        const revenueMismatchList = [];
 
         combinedOrdersMap.forEach((val, id) => {
           const afcData = afcFreqMap.get(id);
@@ -209,16 +210,31 @@ const AfcComparer = () => {
               actual: 0,
               reason: 'Missing in AFC'
             });
-          } else if (afcData.count !== val.expectedCount) {
-            countMismatch.push({
-              id,
-              amount: val.rev,
-              type: val.type || 'N/A',
-              tickets: val.tickets,
-              expected: val.expectedCount,
-              actual: afcData.count,
-              reason: `Count mismatch (Expected ${val.expectedCount}, Found ${afcData.count})`
-            });
+          } else {
+            const afcRevenue = afcData.rows.reduce((sum, r) => sum + parseCurrency(r[afcMap.revenue]), 0);
+            const hasRevenueGap = Math.abs(afcRevenue - val.rev) > 0.01;
+
+            if (afcData.count !== val.expectedCount) {
+              countMismatch.push({
+                id,
+                amount: val.rev,
+                type: val.type || 'N/A',
+                tickets: val.tickets,
+                expected: val.expectedCount,
+                actual: afcData.count,
+                reason: `Count mismatch (Expected ${val.expectedCount}, Found ${afcData.count})`
+              });
+            } else if (hasRevenueGap) {
+              revenueMismatchList.push({
+                id,
+                ourRev: val.rev,
+                afcRev: afcRevenue,
+                diff: val.rev - afcRevenue,
+                type: val.type || 'N/A',
+                tickets: val.tickets,
+                reason: `Revenue gap (Our: ${val.rev}, AFC: ${afcRevenue.toFixed(2)})`
+              });
+            }
           }
         });
 
@@ -232,6 +248,7 @@ const AfcComparer = () => {
         setResults({
           missingInAfc: [...missingInAfc, ...countMismatch],
           missingInOur,
+          revenueMismatches: revenueMismatchList,
           ourTotalRevenue,
           afcTotalRevenue,
           revenueMismatch: ourTotalRevenue - afcTotalRevenue,
@@ -247,16 +264,28 @@ const AfcComparer = () => {
     }, 100);
   };
 
-  const exportMissing = (data, filename) => {
+  const exportMissing = (data, filename, isRevenue = false) => {
     if (!data.length) return;
-    const exportData = data.map(item => ({
-      'Order ID': item.id,
-      'Type/Status': item.type || 'N/A',
-      'Expected in AFC': item.expected,
-      'Actual in AFC': item.actual,
-      'Amount': item.amount,
-      'Reason': item.reason
-    }));
+    const exportData = data.map(item => {
+      if (isRevenue) {
+        return {
+          'Order ID': item.id,
+          'Type': item.type || 'N/A',
+          'Our Amount': item.ourRev,
+          'AFC Amount': item.afcRev,
+          'Difference': item.diff,
+          'Reason': item.reason
+        };
+      }
+      return {
+        'Order ID': item.id,
+        'Type/Status': item.type || 'N/A',
+        'Expected in AFC': item.expected,
+        'Actual in AFC': item.actual,
+        'Amount': item.amount,
+        'Reason': item.reason
+      };
+    });
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Comparison Results");
@@ -622,18 +651,112 @@ const AfcComparer = () => {
           </div>
 
           {/* Tables Section */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
-            {/* Missing in AFC */}
-            <div className="glass rounded-3xl overflow-hidden">
-              <div className="p-6 border-b border-white/10 flex justify-between items-center bg-white/5">
+          <div className="space-y-8">
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+              {/* Missing in AFC */}
+              <div className="glass rounded-3xl overflow-hidden">
+                <div className="p-6 border-b border-white/10 flex justify-between items-center bg-white/5">
+                  <div>
+                    <h2 className="text-xl font-bold">Missing / Count Mismatch in AFC</h2>
+                    <p className="text-xs text-slate-500">Orders we have, but AFC doesn't match the count.</p>
+                  </div>
+                  <button 
+                    onClick={() => exportMissing(results.missingInAfc, 'missing_in_afc')}
+                    disabled={results.missingInAfc.length === 0}
+                    className="btn btn-secondary py-2 px-4 text-xs flex items-center gap-2"
+                  >
+                    <Download className="w-3 h-3" /> Export
+                  </button>
+                </div>
+                <div className="overflow-x-auto max-h-[400px]">
+                  <table className="w-full text-left">
+                    <thead className="sticky-header">
+                      <tr>
+                        <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Order ID</th>
+                        <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Type/Status</th>
+                        <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Tickets</th>
+                        <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Exp/Act</th>
+                        <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {results.missingInAfc.length > 0 ? (
+                        results.missingInAfc.map((res, i) => (
+                          <tr key={i} className="hover:bg-white/5 transition-colors">
+                            <td className="p-4 font-mono text-sm">{res.id}</td>
+                            <td className="p-4 capitalize text-sm">{res.type}</td>
+                            <td className="p-4 text-sm text-center font-bold text-primary">{res.tickets}</td>
+                            <td className="p-4 text-sm text-center">
+                              <span className="text-slate-400">{res.expected}</span>
+                              <span className="mx-1 text-slate-600">/</span>
+                              <span className={res.actual === 0 ? 'text-red-400' : 'text-yellow-400'}>{res.actual}</span>
+                            </td>
+                            <td className="p-4 text-xs font-medium text-red-400/80">{res.reason}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan="5" className="p-12 text-center text-slate-500 italic">No missing orders or count mismatches found.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Missing in Our Report */}
+              <div className="glass rounded-3xl overflow-hidden">
+                <div className="p-6 border-b border-white/10 flex justify-between items-center bg-white/5">
+                  <div>
+                    <h2 className="text-xl font-bold">Missing in Our Report</h2>
+                    <p className="text-xs text-slate-500">Orders AFC has, but we don't.</p>
+                  </div>
+                  <button 
+                    onClick={() => exportMissing(results.missingInOur, 'missing_in_our_report')}
+                    disabled={results.missingInOur.length === 0}
+                    className="btn btn-secondary py-2 px-4 text-xs flex items-center gap-2"
+                  >
+                    <Download className="w-3 h-3" /> Export
+                  </button>
+                </div>
+                <div className="overflow-x-auto max-h-[400px]">
+                  <table className="w-full text-left">
+                    <thead className="sticky-header">
+                      <tr>
+                        <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Order ID</th>
+                        <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Count in AFC</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {results.missingInOur.length > 0 ? (
+                        results.missingInOur.map((res, i) => (
+                          <tr key={i} className="hover:bg-white/5 transition-colors">
+                            <td className="p-4 font-mono text-sm">{res.id}</td>
+                            <td className="p-4 text-sm text-center font-bold text-purple-400">{res.count}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan="2" className="p-12 text-center text-slate-500 italic">No extra orders found in AFC.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Revenue Mismatches (Full Width) */}
+            <div className="glass rounded-3xl overflow-hidden border border-red-500/20">
+              <div className="p-6 border-b border-white/10 flex justify-between items-center bg-red-500/5">
                 <div>
-                  <h2 className="text-xl font-bold">Missing in AFC</h2>
-                  <p className="text-xs text-slate-500">Orders we have, but AFC doesn't.</p>
+                  <h2 className="text-xl font-bold text-red-400">Revenue Mismatches</h2>
+                  <p className="text-xs text-slate-500">Order count matches, but amounts differ.</p>
                 </div>
                 <button 
-                  onClick={() => exportMissing(results.missingInAfc, 'missing_in_afc')}
-                  disabled={results.missingInAfc.length === 0}
-                  className="btn btn-secondary py-2 px-4 text-xs flex items-center gap-2"
+                  onClick={() => exportMissing(results.revenueMismatches, 'revenue_mismatches', true)}
+                  disabled={results.revenueMismatches.length === 0}
+                  className="btn btn-secondary border-red-500/30 hover:bg-red-500/10 py-2 px-4 text-xs flex items-center gap-2"
                 >
                   <Download className="w-3 h-3" /> Export
                 </button>
@@ -643,71 +766,28 @@ const AfcComparer = () => {
                   <thead className="sticky-header">
                     <tr>
                       <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Order ID</th>
-                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Type/Status</th>
-                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Tickets</th>
-                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Exp/Act</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Type</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Our Amt</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">AFC Amt</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Gap</th>
                       <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Reason</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
-                    {results.missingInAfc.length > 0 ? (
-                      results.missingInAfc.map((res, i) => (
-                        <tr key={i} className="hover:bg-white/5 transition-colors">
+                    {results.revenueMismatches.length > 0 ? (
+                      results.revenueMismatches.map((res, i) => (
+                        <tr key={i} className="hover:bg-red-500/5 transition-colors">
                           <td className="p-4 font-mono text-sm">{res.id}</td>
                           <td className="p-4 capitalize text-sm">{res.type}</td>
-                          <td className="p-4 text-sm text-center font-bold text-primary">{res.tickets}</td>
-                          <td className="p-4 text-sm text-center">
-                            <span className="text-slate-400">{res.expected}</span>
-                            <span className="mx-1 text-slate-600">/</span>
-                            <span className={res.actual === 0 ? 'text-red-400' : 'text-yellow-400'}>{res.actual}</span>
-                          </td>
+                          <td className="p-4 text-sm text-center font-bold">₹{res.ourRev.toLocaleString()}</td>
+                          <td className="p-4 text-sm text-center font-bold text-purple-400">₹{res.afcRev.toLocaleString()}</td>
+                          <td className="p-4 text-sm text-center font-bold text-red-400">₹{res.diff.toLocaleString()}</td>
                           <td className="p-4 text-xs font-medium text-red-400/80">{res.reason}</td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td colSpan="5" className="p-12 text-center text-slate-500 italic">No missing orders or count mismatches found.</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Missing in Our Report */}
-            <div className="glass rounded-3xl overflow-hidden">
-              <div className="p-6 border-b border-white/10 flex justify-between items-center bg-white/5">
-                <div>
-                  <h2 className="text-xl font-bold">Missing in Our Report</h2>
-                  <p className="text-xs text-slate-500">Orders AFC has, but we don't.</p>
-                </div>
-                <button 
-                  onClick={() => exportMissing(results.missingInOur, 'missing_in_our_report')}
-                  disabled={results.missingInOur.length === 0}
-                  className="btn btn-secondary py-2 px-4 text-xs flex items-center gap-2"
-                >
-                  <Download className="w-3 h-3" /> Export
-                </button>
-              </div>
-              <div className="overflow-x-auto max-h-[400px]">
-                <table className="w-full text-left">
-                  <thead className="sticky-header">
-                    <tr>
-                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Order ID</th>
-                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Count in AFC</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5">
-                    {results.missingInOur.length > 0 ? (
-                      results.missingInOur.map((res, i) => (
-                        <tr key={i} className="hover:bg-white/5 transition-colors">
-                          <td className="p-4 font-mono text-sm">{res.id}</td>
-                          <td className="p-4 text-sm text-center font-bold text-purple-400">{res.count}</td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan="2" className="p-12 text-center text-slate-500 italic">No extra orders found in AFC.</td>
+                        <td colSpan="6" className="p-12 text-center text-slate-500 italic">No individual revenue mismatches found.</td>
                       </tr>
                     )}
                   </tbody>
