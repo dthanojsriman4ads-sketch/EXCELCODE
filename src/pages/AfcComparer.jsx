@@ -4,8 +4,8 @@ import { Upload, FileText, Layout, Download, ArrowLeft, CheckCircle2, AlertCircl
 import { Link } from 'react-router-dom';
 
 const AfcComparer = () => {
-  const [reports, setReports] = useState({ orders: null, afc: null });
-  const [filenames, setFilenames] = useState({ orders: '', afc: '' });
+  const [reports, setReports] = useState({ orders: null, webhook: null, afc: null });
+  const [filenames, setFilenames] = useState({ orders: '', webhook: '', afc: '' });
   const [results, setResults] = useState(null);
 
   const handleFileUpload = (e, type) => {
@@ -63,88 +63,146 @@ const AfcComparer = () => {
   };
 
   const processComparison = () => {
-    if (!reports.orders || !reports.afc) return;
+    if (!reports.orders && !reports.webhook) {
+      alert("Please upload at least one order report (Orders or Webhook).");
+      return;
+    }
+    if (!reports.afc) {
+      alert("Please upload the AFC report.");
+      return;
+    }
 
-    const ordersMap = detectHeaders(reports.orders, {
+    const orderKeywords = {
       id: ['pg_order_id', 'pg_order', 'order_id', 'orderid'],
       revenue: ['total_amount', 'total amount', 'fare', 'amount'],
-      type: ['ticket_type', 'ticket type', 'type']
-    });
+      type: ['ticket_type', 'ticket type', 'type'],
+      tickets: ['num_of_tickets', 'no of tickets', 'tickets', 'count']
+    };
 
-    const afcMap = detectHeaders(reports.afc, {
+    const afcKeywords = {
       id: ['merchant_order_id', 'merchant_order', 'merchant order', 'order_id', 'orderid'],
       revenue: ['actual_fare', 'actual fare', 'fare', 'amount'],
       type: ['ticket_type', 'ticket type', 'type'],
       status: ['ticket_status', 'ticket status', 'status']
-    });
+    };
 
-    if (ordersMap.headerIndex === -1 || afcMap.headerIndex === -1) {
-      alert("Could not detect headers in one or both files. Please ensure column names are correct.");
+    const ordersMap = reports.orders ? detectHeaders(reports.orders, orderKeywords) : { headerIndex: -1 };
+    const webhookMap = reports.webhook ? detectHeaders(reports.webhook, orderKeywords) : { headerIndex: -1 };
+    const afcMap = detectHeaders(reports.afc, afcKeywords);
+
+    if (afcMap.headerIndex === -1) {
+      alert("Could not detect headers in AFC file.");
       return;
     }
 
-    const ourRows = reports.orders.slice(ordersMap.headerIndex + 1);
-    const afcRows = reports.afc.slice(afcMap.headerIndex + 1);
-
-    const ourDataMap = new Map();
+    const combinedOrdersMap = new Map();
     let ourTotalRevenue = 0;
-    const missingInAfc = [];
 
-    ourRows.forEach(row => {
-      const id = row[ordersMap.id]?.toString().trim();
-      if (!id) return;
-      
-      const rev = parseCurrency(row[ordersMap.revenue]);
-      const type = row[ordersMap.type]?.toString().trim() || 'N/A';
-      
-      ourTotalRevenue += rev;
-      ourDataMap.set(id, { id, rev, type });
-    });
+    const processRows = (data, mapping) => {
+      if (mapping.headerIndex === -1) return;
+      const rows = data.slice(mapping.headerIndex + 1);
+      rows.forEach(row => {
+        const id = row[mapping.id]?.toString().trim();
+        if (!id) return;
+        
+        const rev = parseCurrency(row[mapping.revenue]);
+        const type = row[mapping.type]?.toString().trim().toLowerCase() || 'single';
+        const tickets = parseInt(row[mapping.tickets]) || 1;
+        
+        // Calculate expected count based on type
+        // single -> tickets
+        // return -> 2 * tickets
+        const expectedCount = type.includes('return') ? tickets * 2 : tickets;
 
-    const afcDataMap = new Map();
+        if (!combinedOrdersMap.has(id)) {
+          combinedOrdersMap.set(id, { id, rev, type, tickets, expectedCount });
+          ourTotalRevenue += rev;
+        }
+      });
+    };
+
+    processRows(reports.orders, ordersMap);
+    processRows(reports.webhook, webhookMap);
+
+    const afcFreqMap = new Map();
     let afcTotalRevenue = 0;
-    const missingInOur = [];
+    const afcRows = reports.afc.slice(afcMap.headerIndex + 1);
 
     afcRows.forEach(row => {
       const id = row[afcMap.id]?.toString().trim();
-      if (!id) return;
+      if (!id || !id.toUpperCase().startsWith('DTVM')) return;
 
       const rev = parseCurrency(row[afcMap.revenue]);
-      const type = row[afcMap.type]?.toString().trim() || 'N/A';
-
       afcTotalRevenue += rev;
-      afcDataMap.set(id, { id, rev, type });
+
+      const current = afcFreqMap.get(id) || { count: 0, rows: [] };
+      current.count += 1;
+      current.rows.push(row);
+      afcFreqMap.set(id, current);
     });
 
-    // Cross Match
-    ourDataMap.forEach((val, id) => {
-      if (!afcDataMap.has(id)) {
-        missingInAfc.push({ id, amount: val.rev, type: val.type });
+    const missingInAfc = [];
+    const countMismatch = [];
+
+    combinedOrdersMap.forEach((val, id) => {
+      const afcData = afcFreqMap.get(id);
+      if (!afcData) {
+        missingInAfc.push({ 
+          id, 
+          amount: val.rev, 
+          type: val.type, 
+          tickets: val.tickets, 
+          expected: val.expectedCount, 
+          actual: 0,
+          reason: 'Missing in AFC'
+        });
+      } else if (afcData.count !== val.expectedCount) {
+        countMismatch.push({
+          id,
+          amount: val.rev,
+          type: val.type,
+          tickets: val.tickets,
+          expected: val.expectedCount,
+          actual: afcData.count,
+          reason: `Count mismatch (Expected ${val.expectedCount}, Found ${afcData.count})`
+        });
       }
     });
 
-    afcDataMap.forEach((val, id) => {
-      if (!ourDataMap.has(id)) {
-        missingInOur.push({ id, amount: val.rev, type: val.type });
+    const missingInOur = [];
+    afcFreqMap.forEach((val, id) => {
+      if (!combinedOrdersMap.has(id)) {
+        // Since we don't have our side info, we just report the count found in AFC
+        missingInOur.push({ id, amount: 0, count: val.count }); 
       }
     });
 
     setResults({
-      missingInAfc,
+      missingInAfc: [...missingInAfc, ...countMismatch],
       missingInOur,
       ourTotalRevenue,
       afcTotalRevenue,
       revenueMismatch: ourTotalRevenue - afcTotalRevenue,
-      totalOrdersOur: ourDataMap.size,
-      totalOrdersAfc: afcDataMap.size
+      totalOrdersOur: combinedOrdersMap.size,
+      totalOrdersAfc: afcFreqMap.size
     });
   };
 
   const exportMissing = (data, filename) => {
     if (!data.length) return;
-    const ws = XLSX.utils.json_to_sheet(data);
+    // Map data to a cleaner format for Excel if needed
+    const exportData = data.map(item => ({
+      'Order ID': item.id,
+      'Ticket Type': item.type,
+      'Num of Tickets': item.tickets,
+      'Expected in AFC': item.expected,
+      'Actual in AFC': item.actual,
+      'Amount': item.amount,
+      'Reason/Status': item.reason
+    }));
+    const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Missing Orders");
+    XLSX.utils.book_append_sheet(wb, ws, "Comparison Results");
     XLSX.writeFile(wb, `${filename}.xlsx`);
   };
 
@@ -156,11 +214,14 @@ const AfcComparer = () => {
       alert("Please upload the AFC Report first.");
       return;
     }
-    const afcMap = detectHeaders(reports.afc, {
+    const afcKeywords = {
       id: ['merchant_order_id', 'merchant_order', 'merchant order', 'order_id', 'orderid'],
       revenue: ['actual_fare', 'actual fare', 'fare', 'amount'],
-      type: ['ticket_type', 'type']
-    });
+      type: ['ticket_type', 'ticket type', 'type'],
+      status: ['ticket_status', 'ticket status', 'status']
+    };
+
+    const afcMap = detectHeaders(reports.afc, afcKeywords);
 
     if (afcMap.headerIndex === -1) {
       alert("Could not detect headers in AFC file.");
@@ -169,18 +230,21 @@ const AfcComparer = () => {
 
     const afcRows = reports.afc.slice(afcMap.headerIndex + 1);
     const target = searchId.trim().toLowerCase();
-    const found = afcRows.find(row => {
-      const id = row[afcMap.id]?.toString().trim().toLowerCase();
-      return id === target;
+    
+    const matches = afcRows.filter(row => {
+      const id = row[afcMap.id]?.toString().trim().toUpperCase();
+      return id === target.toUpperCase() && id.startsWith('DTVM');
     });
 
-    if (found) {
+    if (matches.length > 0) {
+      const first = matches[0];
       setSearchResult({
         found: true,
-        id: found[afcMap.id],
-        amount: parseCurrency(found[afcMap.revenue]),
-        type: found[afcMap.type] || 'N/A',
-        status: found[afcMap.status] || 'N/A'
+        count: matches.length,
+        id: first[afcMap.id],
+        amount: parseCurrency(first[afcMap.revenue]),
+        type: first[afcMap.type] || 'N/A',
+        status: first[afcMap.status] || 'N/A'
       });
     } else {
       setSearchResult({ found: false, id: searchId });
@@ -231,6 +295,7 @@ const AfcComparer = () => {
                   <h3 className="font-bold text-green-400 text-lg">Order Found!</h3>
                   <p className="text-sm text-slate-400">
                     ID: <span className="text-white font-mono">{searchResult.id}</span> | 
+                    Found: <span className="text-white font-bold">{searchResult.count} times</span> | 
                     Fare: <span className="text-white font-bold">₹{searchResult.amount}</span> | 
                     Type: <span className="text-white capitalize">{searchResult.type}</span> |
                     Status: <span className={`font-bold ${searchResult.status.toLowerCase().includes('success') || searchResult.status.toLowerCase().includes('paid') ? 'text-green-400' : 'text-yellow-400'}`}>{searchResult.status}</span>
@@ -257,7 +322,7 @@ const AfcComparer = () => {
       </div>
 
       {/* Upload Sections */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="relative group">
           <label className={`drop-zone block p-8 ${reports.orders ? 'border-green-500/50 bg-green-500/5' : ''}`}>
             <input 
@@ -268,8 +333,8 @@ const AfcComparer = () => {
             />
             <div className="flex flex-col items-center space-y-3">
               <FileText className={`w-10 h-10 ${reports.orders ? 'text-green-400' : 'text-primary'}`} />
-              <div className="font-semibold text-lg">{filenames.orders || 'Orders Report (Our Side)'}</div>
-              <p className="text-xs text-slate-500">pg_order_id, num_of_tickets, ticket_type, total_amount</p>
+              <div className="font-semibold text-lg">{filenames.orders || 'Orders Report'}</div>
+              <p className="text-xs text-slate-500 text-center">pg_order_id, num_of_tickets, ticket_type, total_amount</p>
               {reports.orders && (
                 <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
                   File Loaded
@@ -289,6 +354,36 @@ const AfcComparer = () => {
         </div>
 
         <div className="relative group">
+          <label className={`drop-zone block p-8 ${reports.webhook ? 'border-green-500/50 bg-green-500/5' : ''}`}>
+            <input 
+              key={reports.webhook ? 'webhook-loaded' : 'webhook-empty'}
+              type="file" 
+              className="hidden" 
+              onChange={(e) => handleFileUpload(e, 'webhook')} 
+            />
+            <div className="flex flex-col items-center space-y-3">
+              <FileText className={`w-10 h-10 ${reports.webhook ? 'text-green-400' : 'text-primary'}`} />
+              <div className="font-semibold text-lg">{filenames.webhook || 'Webhook Process Report'}</div>
+              <p className="text-xs text-slate-500 text-center">pg_order_id, num_of_tickets, ticket_type, total_amount</p>
+              {reports.webhook && (
+                <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
+                  File Loaded
+                </div>
+              )}
+            </div>
+          </label>
+          {reports.webhook && (
+            <button 
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setReports(prev => ({ ...prev, webhook: null })); setFilenames(prev => ({ ...prev, webhook: '' })); setResults(null); }}
+              className="absolute top-4 right-4 z-20 p-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-full transition-colors"
+              title="Remove File"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        <div className="relative group">
           <label className={`drop-zone block p-8 ${reports.afc ? 'border-green-500/50 bg-green-500/5' : ''}`}>
             <input 
               key={reports.afc ? 'afc-loaded' : 'afc-empty'}
@@ -299,7 +394,7 @@ const AfcComparer = () => {
             <div className="flex flex-col items-center space-y-3">
               <Layout className={`w-10 h-10 ${reports.afc ? 'text-green-400' : 'text-primary'}`} />
               <div className="font-semibold text-lg">{filenames.afc || 'AFC Report'}</div>
-              <p className="text-xs text-slate-500">MERCHANT_ORDER_ID, ACTUAL_FARE, TICKET_TYPE</p>
+              <p className="text-xs text-slate-500 text-center">MERCHANT_ORDER_ID, ACTUAL_FARE, TICKET_TYPE, TICKET_STATUS</p>
               {reports.afc && (
                 <div className="mt-4 px-3 py-1 rounded-lg text-sm font-medium bg-green-500/20 text-green-400">
                   File Loaded
@@ -399,7 +494,9 @@ const AfcComparer = () => {
                     <tr>
                       <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Order ID</th>
                       <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Type</th>
-                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Amount</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Tickets</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Exp/Act</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Reason</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
@@ -408,12 +505,18 @@ const AfcComparer = () => {
                         <tr key={i} className="hover:bg-white/5 transition-colors">
                           <td className="p-4 font-mono text-sm">{res.id}</td>
                           <td className="p-4 capitalize text-sm">{res.type}</td>
-                          <td className="p-4 text-sm font-bold">₹{res.amount}</td>
+                          <td className="p-4 text-sm text-center font-bold text-primary">{res.tickets}</td>
+                          <td className="p-4 text-sm text-center">
+                            <span className="text-slate-400">{res.expected}</span>
+                            <span className="mx-1 text-slate-600">/</span>
+                            <span className={res.actual === 0 ? 'text-red-400' : 'text-yellow-400'}>{res.actual}</span>
+                          </td>
+                          <td className="p-4 text-xs font-medium text-red-400/80">{res.reason}</td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td colSpan="3" className="p-12 text-center text-slate-500 italic">No missing orders found.</td>
+                        <td colSpan="5" className="p-12 text-center text-slate-500 italic">No missing orders or count mismatches found.</td>
                       </tr>
                     )}
                   </tbody>
@@ -441,8 +544,7 @@ const AfcComparer = () => {
                   <thead className="bg-white/10 sticky top-0 z-10">
                     <tr>
                       <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Order ID</th>
-                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Type</th>
-                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase">Amount</th>
+                      <th className="p-4 text-[10px] font-bold text-slate-500 uppercase text-center">Count in AFC</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
@@ -450,13 +552,12 @@ const AfcComparer = () => {
                       results.missingInOur.map((res, i) => (
                         <tr key={i} className="hover:bg-white/5 transition-colors">
                           <td className="p-4 font-mono text-sm">{res.id}</td>
-                          <td className="p-4 capitalize text-sm">{res.type}</td>
-                          <td className="p-4 text-sm font-bold">₹{res.amount}</td>
+                          <td className="p-4 text-sm text-center font-bold text-purple-400">{res.count}</td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td colSpan="3" className="p-12 text-center text-slate-500 italic">No missing orders found.</td>
+                        <td colSpan="2" className="p-12 text-center text-slate-500 italic">No extra orders found in AFC.</td>
                       </tr>
                     )}
                   </tbody>
